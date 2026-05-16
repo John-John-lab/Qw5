@@ -3805,7 +3805,7 @@ def update_task_table(current_page, trigger, count):
     Input("analysis-complete-trigger", "data")
 )
 def update_summary_stats(task_ids, count, current_page, trigger):
-    """Update ONLY summary statistics - fast aggregation."""
+    """Update summary with TWO original tables: Statistics + Distribution."""
     global recalculation_complete_timestamp
     
     # Force cache invalidation if recalculation just completed
@@ -3822,33 +3822,68 @@ def update_summary_stats(task_ids, count, current_page, trigger):
     if not tasks:
         update_summary_stats._last_state = None
         update_summary_stats._last_page = None
-        return "No tasks."
+        return html.Div("No tasks loaded.")
     
     force_refresh = trigger is not None and trigger > 0
     
-    # Quick stats only
+    # Calculate statistics across ALL tasks (fast operations)
     total_tasks = len(tasks)
     completed_count = sum(1 for t in tasks if t.status == "completed")
+    reached_count = sum(1 for t in tasks if t.reached_level)
+    no_touch_count = sum(1 for t in tasks if t.first_event_time is None)
     
-    # Page-specific averages (minimal calculation on visible tasks only)
-    PAGE_SIZE = 300
-    start = (current_page or 0) * PAGE_SIZE
-    end = start + PAGE_SIZE
-    visible_tasks = tasks[start:end]
+    # Aggregate metrics (safe handling of None values)
+    adv_values = [t.max_adverse_move_pct for t in tasks if t.max_adverse_move_pct is not None]
+    dd_values = [t.drawdown_before_level for t in tasks if t.drawdown_before_level is not None]
+    exp_values = [t.max_expected_move_pct for t in tasks if t.max_expected_move_pct is not None]
     
-    if visible_tasks:
-        avg_adv = np.mean([t.max_adverse_move_pct for t in visible_tasks if t.max_adverse_move_pct is not None and not pd.isna(t.max_adverse_move_pct)] or [0])
-        avg_dd = np.mean([t.drawdown_before_level for t in visible_tasks if t.drawdown_before_level is not None and not pd.isna(t.drawdown_before_level)] or [0])
-    else:
-        avg_adv = avg_dd = 0
+    avg_adv = np.mean(adv_values) if adv_values else 0
+    avg_dd = np.mean(dd_values) if dd_values else 0
+    avg_exp = np.mean(exp_values) if exp_values else 0
+    max_adv = max(adv_values) if adv_values else 0
+    max_dd = max(dd_values) if dd_values else 0
     
-    summary_text = (
-        f"✅ Completed: {completed_count}/{total_tasks} | "
-        f"Page: {(current_page or 0) + 1} ({start+1}-{end}) | "
-        f"Avg Adv: {avg_adv:.2f}% | Avg DD: {avg_dd:.2f}%"
-    )
+    # Build Statistics Table (Table 1)
+    stats_rows = [
+        html.Tr([html.Td("Total Tasks"), html.Td(str(total_tasks))]),
+        html.Tr([html.Td("Completed"), html.Td(f"{completed_count} ({completed_count/total_tasks*100:.1f}%)")]),
+        html.Tr([html.Td("Reached Level"), html.Td(f"{reached_count} ({reached_count/total_tasks*100:.1f}%)")]),
+        html.Tr([html.Td("No Touch Events"), html.Td(f"{no_touch_count} ({no_touch_count/total_tasks*100:.1f}%)")]),
+        html.Tr([html.Td("Avg Adverse Move"), html.Td(f"{avg_adv:.2f}%")]),
+        html.Tr([html.Td("Max Adverse Move"), html.Td(f"{max_adv:.2f}%")]),
+        html.Tr([html.Td("Avg Drawdown (Level)"), html.Td(f"{avg_dd:.2f}%")]),
+        html.Tr([html.Td("Max Drawdown (Level)"), html.Td(f"{max_dd:.2f}%")]),
+        html.Tr([html.Td("Avg Expected Move"), html.Td(f"{avg_exp:.2f}%")]),
+    ]
     
-    return summary_text
+    stats_table = html.Table([
+        html.Thead(html.Tr([html.Th("Metric"), html.Th("Value")])),
+        html.Tbody(stats_rows)
+    ], style={"width": "100%", "borderCollapse": "collapse", "fontSize": "12px", "marginBottom": "20px"})
+    
+    # Build Distribution Table (Table 2) - Optimized: calculate once per page change
+    dist_data = {"0-0.5%": 0, "0.5-1%": 0, "1-2%": 0, "2-3%": 0, "3-4%": 0, "4-5%": 0, "5-10%": 0, "10-20%": 0, "20-30%": 0, ">30%": 0}
+    
+    for t in tasks:
+        rng = get_adverse_range(t.max_adverse_move_pct)
+        if rng:
+            dist_data[rng] += 1
+    
+    dist_rows = [html.Tr([html.Td(rng), html.Td(str(cnt)), html.Td(f"{cnt/total_tasks*100:.1f}%")]) 
+                 for rng, cnt in dist_data.items() if cnt > 0]
+    
+    dist_table = html.Table([
+        html.Thead(html.Tr([html.Th("Adverse Move Range"), html.Th("Count"), html.Th("%")])),
+        html.Tbody(dist_rows)
+    ], style={"width": "100%", "borderCollapse": "collapse", "fontSize": "12px"})
+    
+    # Return both tables wrapped in a div
+    return html.Div([
+        html.H5("📊 Summary Statistics", style={"marginTop": "0"}),
+        stats_table,
+        html.H5("📈 Adverse Move Distribution", style={"marginTop": "20px"}),
+        dist_table
+    ])
 
 # ✅ REMOVED OLD TABLE RENDERING - NOW HANDLED BY DASH TABLE COMPONENT
 # The update_summary callback now only returns text statistics for instant performance
