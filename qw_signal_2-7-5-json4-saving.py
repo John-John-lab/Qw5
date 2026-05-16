@@ -1650,22 +1650,20 @@ class DownloadTask:
             
             print(f"✅ [ANALYZE] Step 5/5 Complete: Analysis finished for {sym}. Events: {len(self.events)}, Reached: {self.reached_level}")
             sys.stdout.flush()
-                
-        # ----- HIT CALCULATION (From first touch event, not signal time) -----
-        # Calculate hit_1, hit_1_5, hit_2 starting from first event (level touch)
-        self.hit_1 = False
-        self.hit_1_5 = False
-        self.hit_2 = False
         
-        if self.events and len(self.events) > 0:
-            first_touch_ts = self.events[0]['timestamp']
-            try:
-                touch_idx = df.index[df['timestamp'] == first_touch_ts].tolist()[0]
-            except IndexError:
-                touch_idx = df['timestamp'].searchsorted(first_touch_ts)
-                touch_idx = min(touch_idx, len(df) - 1)
-            
-            df_window = df.iloc[touch_idx:]
+        # ----- FAST HIT CALCULATION (Keeps old vectorized logic for instant table display) -----
+        # CRITICAL: Calculate signal_idx for hit calculations and drawdown (from signal time)
+        # This MUST be here to avoid UnboundLocalError in drawdown section
+        try:
+            safe_signal_time = float(self.signal_time)
+            signal_idx = df['timestamp'].searchsorted(safe_signal_time, side='left')
+            if signal_idx >= len(df):
+                signal_idx = len(df) - 1
+        except (ValueError, TypeError):
+            signal_idx = 0
+        
+        if signal_idx < len(df):
+            df_window = df.iloc[signal_idx:]
             if self.signal_direction == 'resistance':
                 max_price = df_window['high'].max()
                 self.hit_1 = (max_price - self.signal_price) / self.signal_price >= 0.01
@@ -1676,11 +1674,17 @@ class DownloadTask:
                 self.hit_1 = (self.signal_price - min_price) / self.signal_price >= 0.01
                 self.hit_1_5 = (self.signal_price - min_price) / self.signal_price >= 0.015
                 self.hit_2 = (self.signal_price - min_price) / self.signal_price >= 0.02
+        else:
+            self.hit_1 = self.hit_1_5 = self.hit_2 = False
 
         if self.log_events:
-            self.add_log(f"Hit targets (from 1st touch): 1%={self.hit_1}, 1.5%={self.hit_1_5}, 2%={self.hit_2}")
+            self.add_log(f"Fast Hit targets (from signal time): 1%={self.hit_1}, 1.5%={self.hit_1_5}, 2%={self.hit_2}")
 
-        # ----- NEW PRECISE HIT TIMING (Starts ONLY after first touch) -----
+        # =====================================================================
+        # 🔧 VECTORISED HIT TIMING (Replaces iterrows loop at line 1705)
+        # Uses np.argmax for O(1) lookup instead of O(n) iteration
+        # Calculates first_hit_*_expected/opposite from FIRST TOUCH event
+        # =====================================================================
         # Reset precise flags/times to prevent stale data
         self.first_hit_1_expected = False; self.first_hit_1_expected_time = None
         self.first_hit_1_5_expected = False; self.first_hit_1_5_expected_time = None
@@ -1688,11 +1692,7 @@ class DownloadTask:
         self.first_hit_1_opposite = False; self.first_hit_1_opposite_time = None
         self.first_hit_1_5_opposite = False; self.first_hit_1_5_opposite_time = None
         self.first_hit_2_opposite = False; self.first_hit_2_opposite_time = None
-
-        # =====================================================================
-        # 🔧 VECTORISED HIT TIMING (Replaces iterrows loop at line 1705)
-        # Uses np.argmax for O(1) lookup instead of O(n) iteration
-        # =====================================================================
+        
         if self.events and len(self.events) > 0:
             first_touch_ts = self.events[0]['timestamp']
             try:
@@ -1774,6 +1774,7 @@ class DownloadTask:
         # =====================================================================
         # 🔧 VECTORIZED DRAWDOWN CALCULATION (Replaces iterrows at line 1766)
         # Uses cummax/cummin for O(n) instead of nested O(n²) loops
+        # CRITICAL: signal_idx already defined above for fast hit calculation
         # =====================================================================
         if signal_idx < len(df):
             # Extract arrays for vectorized operations
