@@ -1660,9 +1660,9 @@ class DownloadTask:
             signal_idx = df['timestamp'].searchsorted(safe_signal_time, side='left')
             if signal_idx >= len(df):
                 signal_idx = len(df) - 1
-            logger.debug(f"🔢 [IDX CALC] signal_idx={signal_idx}, df_len={len(df)}, signal_time={self.signal_time}")
+            print(f"🔢 [IDX CALC] {self.symbols} signal_idx={signal_idx}, df_len={len(df)}, signal_time={self.signal_time}")
         except (ValueError, TypeError) as e:
-            logger.warning(f"⚠️ [IDX CALC] Could not calculate signal_idx: {e}, using default 0")
+            print(f"⚠️ [IDX CALC] Could not calculate signal_idx: {e}, using default 0")
             pass  # signal_idx remains 0
         
         if signal_idx < len(df):
@@ -1977,7 +1977,7 @@ class DownloadTask:
         if signal_idx_entry < 0: signal_idx_entry = 0
         entry_price = df.iloc[signal_idx_entry]['close']
         
-        logger.debug(f"🔢 [ENTRY IDX] signal_idx_entry={signal_idx_entry}, entry_price={entry_price}")
+        print(f"🔢 [ENTRY IDX] {self.symbols} signal_idx_entry={signal_idx_entry}, entry_price={entry_price}")
         
         # Reset all sgnl metrics to prevent stale data from previous runs
         self.max_adverse_sgnl_pct = None
@@ -2067,7 +2067,7 @@ class DownloadTask:
         events_count = len(self.events) if self.events else 0
         first_event_ts = self.events[0]['timestamp'] if self.events and len(self.events) > 0 else None
         first_event_str = pd.to_datetime(first_event_ts, unit='ms', utc=True).strftime("%Y-%m-%d %H:%M") if first_event_ts else "None"
-        logger.info(f"📊 [SUMMARY] {sym} {self.timeframe} | Events: {events_count} | First Event: {first_event_str} | signal_idx: {signal_idx_entry} | Status: COMPLETE")
+        print(f"📊 [SUMMARY] {sym} {self.timeframe} | Events: {events_count} | First Event: {first_event_str} | signal_idx: {signal_idx_entry} | Status: COMPLETE")
                 
         if len(returned_indices) > 0 and 'adv_before' in locals() and not adv_before.empty and adv_before.max() > 0:
             max_before_idx = adv_before.idxmax()
