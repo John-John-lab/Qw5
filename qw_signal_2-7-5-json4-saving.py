@@ -3683,39 +3683,154 @@ def update_progress(_, stores):
     return logs, progs, texts
 
 @app.callback(
+    Output("tasks-container", "children"),
+    Input("task-page-store", "data"),
+    Input("analysis-complete-trigger", "data"),
+    State("task-count-store", "data")
+)
+def update_task_table(current_page, trigger, count):
+    """Render the full task table with all columns - optimized for performance."""
+    global recalculation_complete_timestamp
+    
+    # Force refresh on recalculation complete
+    force_refresh = trigger is not None and trigger > 0
+    
+    with tm.lock:
+        tasks = list(tm.tasks.values())
+    
+    if not tasks:
+        return html.Div("No tasks loaded. Load a JSON file or parse signals first.")
+    
+    total_tasks = len(tasks)
+    PAGE_SIZE = 300
+    start_idx = (current_page or 0) * PAGE_SIZE
+    end_idx = min(start_idx + PAGE_SIZE, total_tasks)
+    visible_tasks = tasks[start_idx:end_idx]
+    
+    # Build table rows - only loop through visible 300 tasks
+    table_rows = []
+    
+    for idx, task in enumerate(visible_tasks):
+        global_idx = start_idx + idx
+        
+        # Row color based on status
+        row_color = "#ffffff"
+        if task.reached_level:
+            row_color = "#e6fffa"  # Light green
+        elif task.first_event_time is None and task.reached_level is False:
+            row_color = "#fff5f5"  # Light red
+        
+        # Format fields safely
+        first_ev_time = ms_to_utc_datetime(task.first_event_time).strftime('%Y-%m-%d %H:%M') if task.first_event_time else "-"
+        pin_bar = "✅" if task.first_event_is_pin else "-"
+        ev_type = task.first_event_type if task.first_event_type else "-"
+        
+        hit_1 = "✅" if task.hit_1 else ("❌" if task.first_event_time else "-")
+        hit_1_5 = "✅" if task.hit_1_5 else ("❌" if task.first_event_time else "-")
+        hit_2 = "✅" if task.hit_2 else ("❌" if task.first_event_time else "-")
+        
+        max_adv = f"{task.max_adverse_move_pct:.2f}%" if task.max_adverse_move_pct is not None else "-"
+        max_exp = f"{task.max_expected_move_pct:.2f}%" if task.max_expected_move_pct is not None else "-"
+        
+        dd_lvl = f"{task.drawdown_before_level:.2f}%" if task.drawdown_before_level is not None else "-"
+        dd_1pct = f"{task.drawdown_before_1pct:.2f}%" if task.drawdown_before_1pct is not None else "-"
+        
+        strat_sum = task.strategy_log_summary if task.strategy_log_summary else "-"
+        strat_conf = f"{task.strategy_confidence:.1f}%" if task.strategy_confidence is not None else "-"
+        impulse_cnt = str(task.impulse_results.get('count', 0)) if task.impulse_results else "0"
+        
+        price_change = f"{task.price_change_pct:.2f}%" if task.price_change_pct is not None else "-"
+        reached = "✅" if task.reached_level else ("❌" if task.first_event_time else "-")
+        reversed_dir = "⚠️" if task.reversed_direction else "-"
+        
+        # Action buttons with unique IDs
+        btn_view = html.Button("📊 Chart", id={'type': 'btn-view', 'index': global_idx}, n_clicks=0, className="btn-small")
+        btn_edit = html.Button("✏️ Edit", id={'type': 'btn-edit', 'index': global_idx}, n_clicks=0, className="btn-small")
+        
+        row = html.Tr([
+            html.Td(task.symbol),
+            html.Td(task.timeframe),
+            html.Td(task.start_date),
+            html.Td(task.end_date),
+            html.Td(ms_to_utc_datetime(task.signal_time).strftime('%Y-%m-%d %H:%M')),
+            html.Td(f"{task.signal_price:.5f}"),
+            html.Td(task.signal_direction),
+            html.Td(first_ev_time),
+            html.Td(pin_bar),
+            html.Td(ev_type),
+            html.Td(hit_1),
+            html.Td(hit_1_5),
+            html.Td(hit_2),
+            html.Td(max_adv),
+            html.Td(max_exp),
+            html.Td(dd_lvl),
+            html.Td(dd_1pct),
+            html.Td(strat_sum),
+            html.Td(strat_conf),
+            html.Td(impulse_cnt),
+            html.Td(price_change),
+            html.Td(reached),
+            html.Td(reversed_dir),
+            html.Td([btn_view, btn_edit])
+        ], style={'backgroundColor': row_color})
+        
+        table_rows.append(row)
+    
+    # Construct full table with original column order
+    task_table = html.Table([
+        html.Thead([
+            html.Tr([
+                html.Th("Symbol"), html.Th("TF"), html.Th("Start"), html.Th("End"),
+                html.Th("Signal Time"), html.Th("Signal Price"), html.Th("Direction"),
+                html.Th("First Event"), html.Th("Pin?"), html.Th("Type"),
+                html.Th("Hit 1%"), html.Th("Hit 1.5%"), html.Th("Hit 2%"),
+                html.Th("Max Adv %"), html.Th("Max Exp %"),
+                html.Th("DD Level"), html.Th("DD 1%"),
+                html.Th("Strategy"), html.Th("Confidence"), html.Th("Impulse"),
+                html.Th("Price Δ%"), html.Th("Reached"), html.Th("Reversed"),
+                html.Th("Actions")
+            ])
+        ]),
+        html.Tbody(table_rows)
+    ], className="data-table", style={"width": "100%", "borderCollapse": "collapse", "fontSize": "12px"})
+    
+    return task_table
+
+
+@app.callback(
     Output("task-summary", "children", allow_duplicate=True),
     Input("task-ids-store", "data"),
     Input("task-count-store", "data"),
     Input("task-page-store", "data"),
     Input("analysis-complete-trigger", "data")
 )
-def update_summary(task_ids, count, current_page, trigger):
-    """Update ONLY summary statistics - NOT the full table."""
+def update_summary_stats(task_ids, count, current_page, trigger):
+    """Update ONLY summary statistics - fast aggregation."""
     global recalculation_complete_timestamp
     
     # Force cache invalidation if recalculation just completed
     current_recalc_ts = recalculation_complete_timestamp
-    if hasattr(update_summary, '_last_recalc_ts'):
-        if current_recalc_ts > update_summary._last_recalc_ts:
-            update_summary._last_state = None
-            update_summary._last_page = None
-    update_summary._last_recalc_ts = current_recalc_ts
+    if hasattr(update_summary_stats, '_last_recalc_ts'):
+        if current_recalc_ts > update_summary_stats._last_recalc_ts:
+            update_summary_stats._last_state = None
+            update_summary_stats._last_page = None
+    update_summary_stats._last_recalc_ts = current_recalc_ts
     
     with tm.lock:
         tasks = list(tm.tasks.values())
-        
+    
     if not tasks:
-        update_summary._last_state = None
-        update_summary._last_page = None
+        update_summary_stats._last_state = None
+        update_summary_stats._last_page = None
         return "No tasks."
     
     force_refresh = trigger is not None and trigger > 0
     
-    # Quick stats only - no table rendering
+    # Quick stats only
     total_tasks = len(tasks)
     completed_count = sum(1 for t in tasks if t.status == "completed")
     
-    # Page-specific averages (minimal calculation)
+    # Page-specific averages (minimal calculation on visible tasks only)
     PAGE_SIZE = 300
     start = (current_page or 0) * PAGE_SIZE
     end = start + PAGE_SIZE
@@ -3729,7 +3844,7 @@ def update_summary(task_ids, count, current_page, trigger):
     
     summary_text = (
         f"✅ Completed: {completed_count}/{total_tasks} | "
-        f"Page: {(current_page or 0) + 1} | "
+        f"Page: {(current_page or 0) + 1} ({start+1}-{end}) | "
         f"Avg Adv: {avg_adv:.2f}% | Avg DD: {avg_dd:.2f}%"
     )
     
