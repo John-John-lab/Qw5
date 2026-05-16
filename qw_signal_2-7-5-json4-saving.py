@@ -1651,11 +1651,21 @@ class DownloadTask:
             print(f"✅ [ANALYZE] Step 5/5 Complete: Analysis finished for {sym}. Events: {len(self.events)}, Reached: {self.reached_level}")
             sys.stdout.flush()
                 
-        # ----- FAST HIT CALCULATION (Keeps old vectorized logic for instant table display) -----
-        signal_idx = df['timestamp'].searchsorted(self.signal_time)
-        signal_idx = min(signal_idx, len(df) - 1)
-        if signal_idx < len(df):
-            df_window = df.iloc[signal_idx:]
+        # ----- HIT CALCULATION (From first touch event, not signal time) -----
+        # Calculate hit_1, hit_1_5, hit_2 starting from first event (level touch)
+        self.hit_1 = False
+        self.hit_1_5 = False
+        self.hit_2 = False
+        
+        if self.events and len(self.events) > 0:
+            first_touch_ts = self.events[0]['timestamp']
+            try:
+                touch_idx = df.index[df['timestamp'] == first_touch_ts].tolist()[0]
+            except IndexError:
+                touch_idx = df['timestamp'].searchsorted(first_touch_ts)
+                touch_idx = min(touch_idx, len(df) - 1)
+            
+            df_window = df.iloc[touch_idx:]
             if self.signal_direction == 'resistance':
                 max_price = df_window['high'].max()
                 self.hit_1 = (max_price - self.signal_price) / self.signal_price >= 0.01
@@ -1666,11 +1676,9 @@ class DownloadTask:
                 self.hit_1 = (self.signal_price - min_price) / self.signal_price >= 0.01
                 self.hit_1_5 = (self.signal_price - min_price) / self.signal_price >= 0.015
                 self.hit_2 = (self.signal_price - min_price) / self.signal_price >= 0.02
-        else:
-            self.hit_1 = self.hit_1_5 = self.hit_2 = False
 
         if self.log_events:
-            self.add_log(f"Fast Hit targets: 1%={self.hit_1}, 1.5%={self.hit_1_5}, 2%={self.hit_2}")
+            self.add_log(f"Hit targets (from 1st touch): 1%={self.hit_1}, 1.5%={self.hit_1_5}, 2%={self.hit_2}")
 
         # ----- NEW PRECISE HIT TIMING (Starts ONLY after first touch) -----
         # Reset precise flags/times to prevent stale data
@@ -3697,20 +3705,32 @@ def update_summary(task_ids, count, current_page, trigger):
     
     # 🛡️ PERFORMANCE & STABILITY FIX
     is_active_download = any(t.status == "running" for t in tasks)
+    
+    # 🔧 CRITICAL: Force cache invalidation when recalculation trigger fires
+    # This ensures the table refreshes after recalculation completes
+    force_refresh = trigger is not None and trigger > 0
+    
     if is_active_download:
         update_summary._last_page = current_page
     else:
         # 🔧 SAFE CACHE KEY: Uses getattr to prevent silent crashes on older JSON tasks
+        # Include more fields that change during recalculation to detect updates
         current_state = tuple((
             t.task_id, t.status, t.paused,
             getattr(t, 'hit_1', False),
             getattr(t, 'reversed_direction', False),
-            getattr(t, 'hit_2', False)
+            getattr(t, 'hit_2', False),
+            getattr(t, 'max_adverse_move_pct', None),
+            getattr(t, 'max_expected_move_pct', None),
+            len(t.events) if hasattr(t, 'events') and t.events else 0,
+            getattr(t, 'first_event_time', None),
+            getattr(t, 'drawdown_before_level', None)
         ) for t in tasks)
         prev_state = getattr(update_summary, "_last_state", None)
         prev_page = getattr(update_summary, "_last_page", None)
         
-        if current_state == prev_state and current_page == prev_page:
+        # 🔧 CRITICAL: Force refresh if trigger fired OR state changed
+        if not force_refresh and current_state == prev_state and current_page == prev_page:
             return no_update
             
         update_summary._last_state = current_state
